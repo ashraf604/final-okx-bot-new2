@@ -1,5 +1,5 @@
 // =================================================================
-// OKX Advanced Analytics Bot - v106 (The Accountability Fix)
+// OKX Advanced Analytics Bot - v106 (Refactored with Adapter Pattern)
 // =================================================================
 
 const express = require("express");
@@ -14,10 +14,144 @@ const app = express();
 const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN);
 const PORT = process.env.PORT || 3000;
 const AUTHORIZED_USER_ID = parseInt(process.env.AUTHORIZED_USER_ID);
-const API_BASE_URL = "https://www.okx.com";
 
 // --- State Variables ---
 let waitingState = null;
+
+// =================================================================
+// SECTION 0: EXCHANGE ADAPTERS (NEW)
+// =================================================================
+
+class OKXAdapter {
+    constructor() {
+        this.name = "OKX";
+        this.baseURL = "https://www.okx.com";
+    }
+
+    getHeaders(method, path, body = "") {
+        const timestamp = new Date().toISOString();
+        const prehash = timestamp + method.toUpperCase() + path + (typeof body === 'object' ? JSON.stringify(body) : body);
+        const sign = crypto.createHmac("sha256", process.env.OKX_API_SECRET_KEY).update(prehash).digest("base64");
+        return {
+            "OK-ACCESS-KEY": process.env.OKX_API_KEY,
+            "OK-ACCESS-SIGN": sign,
+            "OK-ACCESS-TIMESTAMP": timestamp,
+            "OK-ACCESS-PASSPHRASE": process.env.OKX_API_PASSPHRASE,
+            "Content-Type": "application/json",
+        };
+    }
+
+    async getMarketPrices() {
+        try {
+            const tickersRes = await fetch(`${this.baseURL}/api/v5/market/tickers?instType=SPOT`);
+            const tickersJson = await tickersRes.json();
+            if (tickersJson.code !== '0') {
+                console.error("Failed to fetch market prices (OKX Error):", tickersJson.msg);
+                return null;
+            }
+            const prices = {};
+            tickersJson.data.forEach(t => {
+                if (t.instId.endsWith('-USDT')) {
+                    const lastPrice = parseFloat(t.last);
+                    const openPrice = parseFloat(t.open24h);
+                    let change24h = 0;
+                    if (openPrice > 0) change24h = (lastPrice - openPrice) / openPrice;
+                    prices[t.instId] = { price: lastPrice, open24h: openPrice, change24h, volCcy24h: parseFloat(t.volCcy24h) };
+                }
+            });
+            return prices;
+        } catch (error) {
+            console.error("Exception in OKXAdapter.getMarketPrices:", error.message);
+            return null;
+        }
+    }
+
+    async getPortfolio(prices) {
+        try {
+            const path = "/api/v5/account/balance";
+            const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) });
+            const json = await res.json();
+            if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) {
+                return { error: `فشل جلب المحفظة: ${json.msg || 'بيانات غير متوقعة من المنصة'}` };
+            }
+            
+            let assets = [], total = 0, usdtValue = 0;
+            json.data[0].details.forEach(asset => {
+                const amount = parseFloat(asset.eq);
+                if (amount > 0) {
+                    const instId = `${asset.ccy}-USDT`;
+                    const priceData = prices[instId] || { price: (asset.ccy === "USDT" ? 1 : 0), change24h: 0 };
+                    const value = amount * priceData.price;
+                    total += value;
+
+                    if (asset.ccy === "USDT") {
+                        usdtValue = value;
+                    }
+                    if (value >= 1) {
+                        assets.push({ asset: asset.ccy, price: priceData.price, value, amount, change24h: priceData.change24h });
+                    }
+                }
+            });
+            
+            assets.sort((a, b) => b.value - a.value);
+            return { assets, total, usdtValue };
+        } catch (e) {
+            console.error(e);
+            return { error: "خطأ في الاتصال بالمنصة." };
+        }
+    }
+
+    async getBalanceForComparison() {
+        try {
+            const path = "/api/v5/account/balance";
+            const res = await fetch(`${this.baseURL}${path}`, { headers: this.getHeaders("GET", path) });
+            const json = await res.json();
+            if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) return null;
+            
+            const balanceMap = {};
+            json.data[0].details.forEach(asset => {
+                balanceMap[asset.ccy] = parseFloat(asset.eq);
+            });
+            return balanceMap;
+        } catch (error) {
+            console.error("Exception in OKXAdapter.getBalanceForComparison:", error);
+            return null;
+        }
+    }
+
+    async getInstrumentDetails(instId) {
+        try {
+            const tickerRes = await fetch(`${this.baseURL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`);
+            const tickerJson = await tickerRes.json();
+            if (tickerJson.code !== '0' || !tickerJson.data[0]) return { error: `لم يتم العثور على العملة.` };
+            const tickerData = tickerJson.data[0];
+            return {
+                price: parseFloat(tickerData.last),
+                high24h: parseFloat(tickerData.high24h),
+                low24h: parseFloat(tickerData.low24h),
+                vol24h: parseFloat(tickerData.volCcy24h),
+            };
+        } catch (e) {
+            console.error(e);
+            return { error: "خطأ في الاتصال بالمنصة." };
+        }
+    }
+
+    async getHistoricalCandles(instId, limit = 100) {
+        try {
+            const res = await fetch(`${this.baseURL}/api/v5/market/history-candles?instId=${instId}&bar=1D&limit=${limit}`);
+            const json = await res.json();
+            if (json.code !== '0' || !json.data || json.data.length === 0) return [];
+            return json.data.map(c => parseFloat(c[4])).reverse();
+        } catch (e) {
+            console.error(`Exception in OKXAdapter.getHistoricalCandles for ${instId}:`, e);
+            return [];
+        }
+    }
+}
+
+// Instantiate the adapter
+const okxAdapter = new OKXAdapter();
 
 // =================================================================
 // SECTION 1: DATABASE AND HELPER FUNCTIONS
@@ -98,7 +232,6 @@ async function updateVirtualTradeStatus(tradeId, status, finalPrice) {
     }
 }
 
-
 const loadCapital = async () => (await getConfig("capital", { value: 0 })).value;
 const saveCapital = (amount) => saveConfig("capital", { value: amount });
 const loadSettings = async () => await getConfig("settings", { dailySummary: true, autoPostToChannel: false, debugMode: false });
@@ -128,138 +261,16 @@ async function sendDebugMessage(message) {
     const settings = await loadSettings();
     if (settings.debugMode) {
         try {
-            await bot.api.sendMessage(AUTHORIZED_USER_ID, `🐞 *Debug:* ${message}`, { parse_mode: "Markdown" });
+            await bot.api.sendMessage(AUTHORIZED_USER_ID, `🐞 *Debug (OKX):* ${message}`, { parse_mode: "Markdown" });
         } catch (e) {
             console.error("Failed to send debug message:", e);
         }
     }
 }
 
-function getHeaders(method, path, body = "") {
-    const timestamp = new Date().toISOString();
-    const prehash = timestamp + method.toUpperCase() + path + (typeof body === 'object' ? JSON.stringify(body) : body);
-    const sign = crypto.createHmac("sha256", process.env.OKX_API_SECRET_KEY).update(prehash).digest("base64");
-    return {
-        "OK-ACCESS-KEY": process.env.OKX_API_KEY,
-        "OK-ACCESS-SIGN": sign,
-        "OK-ACCESS-TIMESTAMP": timestamp,
-        "OK-ACCESS-PASSPHRASE": process.env.OKX_API_PASSPHRASE,
-        "Content-Type": "application/json",
-    };
-}
-
 // =================================================================
-// SECTION 2: API AND DATA PROCESSING FUNCTIONS
+// SECTION 2: DATA PROCESSING FUNCTIONS
 // =================================================================
-
-async function getMarketPrices() {
-    try {
-        const tickersRes = await fetch(`${API_BASE_URL}/api/v5/market/tickers?instType=SPOT`);
-        const tickersJson = await tickersRes.json();
-        if (tickersJson.code !== '0') {
-            console.error("Failed to fetch market prices (OKX Error):", tickersJson.msg);
-            return null;
-        }
-        const prices = {};
-        tickersJson.data.forEach(t => {
-            if (t.instId.endsWith('-USDT')) {
-                const lastPrice = parseFloat(t.last);
-                const openPrice = parseFloat(t.open24h);
-                let change24h = 0;
-                if (openPrice > 0) change24h = (lastPrice - openPrice) / openPrice;
-                prices[t.instId] = { price: lastPrice, open24h: openPrice, change24h, volCcy24h: parseFloat(t.volCcy24h) };
-            }
-        });
-        return prices;
-    } catch (error) {
-        console.error("Exception in getMarketPrices:", error.message);
-        return null;
-    }
-}
-
-async function getPortfolio(prices) {
-    try {
-        const path = "/api/v5/account/balance";
-        const res = await fetch(`${API_BASE_URL}${path}`, { headers: getHeaders("GET", path) });
-        const json = await res.json();
-        if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) {
-            return { error: `فشل جلب المحفظة: ${json.msg || 'بيانات غير متوقعة من المنصة'}` };
-        }
-        
-        let assets = [], total = 0, usdtValue = 0;
-        json.data[0].details.forEach(asset => {
-            const amount = parseFloat(asset.eq);
-            if (amount > 0) {
-                const instId = `${asset.ccy}-USDT`;
-                const priceData = prices[instId] || { price: (asset.ccy === "USDT" ? 1 : 0), change24h: 0 };
-                const value = amount * priceData.price;
-                total += value;
-
-                if (asset.ccy === "USDT") {
-                    usdtValue = value;
-                }
-
-                if (value >= 1) {
-                    assets.push({ asset: asset.ccy, price: priceData.price, value, amount, change24h: priceData.change24h });
-                }
-            }
-        });
-        
-        assets.sort((a, b) => b.value - a.value);
-        return { assets, total, usdtValue };
-    } catch (e) {
-        console.error(e);
-        return { error: "خطأ في الاتصال بالمنصة." };
-    }
-}
-
-async function getBalanceForComparison() {
-    try {
-        const path = "/api/v5/account/balance";
-        const res = await fetch(`${API_BASE_URL}${path}`, { headers: getHeaders("GET", path) });
-        const json = await res.json();
-        if (json.code !== '0' || !json.data || !json.data[0] || !json.data[0].details) return null;
-        
-        const balanceMap = {};
-        json.data[0].details.forEach(asset => {
-            balanceMap[asset.ccy] = parseFloat(asset.eq);
-        });
-        return balanceMap;
-    } catch (error) {
-        console.error("Exception in getBalanceForComparison:", error);
-        return null;
-    }
-}
-
-async function getInstrumentDetails(instId) {
-    try {
-        const tickerRes = await fetch(`${API_BASE_URL}/api/v5/market/ticker?instId=${instId.toUpperCase()}`);
-        const tickerJson = await tickerRes.json();
-        if (tickerJson.code !== '0' || !tickerJson.data[0]) return { error: `لم يتم العثور على العملة.` };
-        const tickerData = tickerJson.data[0];
-        return {
-            price: parseFloat(tickerData.last),
-            high24h: parseFloat(tickerData.high24h),
-            low24h: parseFloat(tickerData.low24h),
-            vol24h: parseFloat(tickerData.volCcy24h),
-        };
-    } catch (e) {
-        console.error(e);
-        return { error: "خطأ في الاتصال بالمنصة." };
-    }
-}
-
-async function getHistoricalCandles(instId, limit = 100) {
-    try {
-        const res = await fetch(`${API_BASE_URL}/api/v5/market/history-candles?instId=${instId}&bar=1D&limit=${limit}`);
-        const json = await res.json();
-        if (json.code !== '0' || !json.data || json.data.length === 0) return [];
-        return json.data.map(c => parseFloat(c[4])).reverse();
-    } catch (e) {
-        console.error(`Exception in getHistoricalCandles for ${instId}:`, e);
-        return [];
-    }
-}
 
 function calculateSMA(closes, period) {
     if (closes.length < period) return null;
@@ -291,7 +302,8 @@ function calculateRSI(closes, period = 14) {
 }
 
 async function getTechnicalAnalysis(instId) {
-    const closes = await getHistoricalCandles(instId, 51);
+    // Calls adapter method
+    const closes = await okxAdapter.getHistoricalCandles(instId, 51);
     if (closes.length < 51) return { error: "بيانات الشموع غير كافية." };
     return { rsi: calculateRSI(closes), sma20: calculateSMA(closes, 20), sma50: calculateSMA(closes, 50) };
 }
@@ -447,7 +459,7 @@ function formatPublicClose(details) {
         msg += `الخروج بانضباط وفقًا للخطة هو نجاح بحد ذاته. نحافظ على رأس المال للفرصة القادمة.\n`;
     }
     msg += `\nنبارك لمن اتبع التوصية. نستعد الآن للبحث عن الفرصة التالية.\n`;
-    msg += `#نتائجتوصيات #${asset}`;
+    msg += `#نتائج_توصيات #${asset}`;
     return msg;
 }
 
@@ -513,7 +525,8 @@ async function formatPortfolioMsg(assets, total, capital) {
 }
 
 async function formatAdvancedMarketAnalysis() {
-    const prices = await getMarketPrices();
+    // Calls adapter method
+    const prices = await okxAdapter.getMarketPrices();
     if (!prices) return "❌ فشل جلب بيانات السوق.";
 
     const marketData = Object.entries(prices)
@@ -527,7 +540,7 @@ async function formatAdvancedMarketAnalysis() {
     marketData.sort((a, b) => b.volCcy24h - a.volCcy24h);
     const highVolume = marketData.slice(0, 5);
     
-    let msg = `🚀 *تحليل السوق المتقدم* | ${new Date().toLocaleDateString("ar-EG")}\n━━━━━━━━━━━━━━━━━━━\n\n`;
+    let msg = `🚀 *تحليل السوق المتقدم (OKX)* | ${new Date().toLocaleDateString("ar-EG")}\n━━━━━━━━━━━━━━━━━━━\n\n`;
     msg += "📈 *أكبر الرابحين (24س):*\n" + topGainers.map(c => `  - \`${c.instId}\`: \`+${formatNumber(c.change24h * 100)}%\``).join('\n') + "\n\n";
     msg += "📉 *أكبر الخاسرين (24س):*\n" + topLosers.map(c => `  - \`${c.instId}\`: \`${formatNumber(c.change24h * 100)}%\``).join('\n') + "\n\n";
     msg += "📊 *الأعلى في حجم التداول:*\n" + highVolume.map(c => `  - \`${c.instId}\`: \`${(c.volCcy24h / 1e6).toFixed(2)}M\` USDT`).join('\n') + "\n\n";
@@ -593,7 +606,7 @@ async function updatePositionAndAnalyze(asset, amountChange, price, newTotalAmou
             const closeReportData = {
                 asset,
                 pnl: finalPnl,
-                pnlPercent: finalPnlPercent, // ✅ THIS IS THE FIX
+                pnlPercent: finalPnlPercent,
                 durationDays,
                 avgBuyPrice: position.avgBuyPrice,
                 avgSellPrice,
@@ -623,13 +636,16 @@ async function monitorBalanceChanges() {
         const oldTotalValue = previousState.totalValue || 0;
         const oldUsdtValue = previousBalances['USDT'] || 0;
         
-        const currentBalance = await getBalanceForComparison();
+        // Calls adapter method
+        const currentBalance = await okxAdapter.getBalanceForComparison();
         if (!currentBalance) return;
         
-        const prices = await getMarketPrices();
+        // Calls adapter method
+        const prices = await okxAdapter.getMarketPrices();
         if (!prices) return;
         
-        const { assets: newAssets, total: newTotalValue, usdtValue: newUsdtValue } = await getPortfolio(prices);
+        // Calls adapter method
+        const { assets: newAssets, total: newTotalValue, usdtValue: newUsdtValue } = await okxAdapter.getPortfolio(prices);
         if (newTotalValue === undefined) return;
 
         if (Object.keys(previousBalances).length === 0) {
@@ -697,7 +713,6 @@ async function monitorBalanceChanges() {
                 }
             }
         }
-
         if (stateNeedsUpdate) {
             await saveBalanceState({ balances: currentBalance, totalValue: newTotalValue });
             await sendDebugMessage("State updated after balance change.");
@@ -707,13 +722,13 @@ async function monitorBalanceChanges() {
     }
 }
 
-
 async function trackPositionHighLow() {
     try {
         const positions = await loadPositions();
         if (Object.keys(positions).length === 0) return;
 
-        const prices = await getMarketPrices();
+        // Calls adapter method
+        const prices = await okxAdapter.getMarketPrices();
         if (!prices) return;
 
         let positionsUpdated = false;
@@ -741,12 +756,12 @@ async function trackPositionHighLow() {
     }
 }
 
-
 async function checkPriceAlerts() {
     try {
         const alerts = await loadAlerts();
         if (alerts.length === 0) return;
-        const prices = await getMarketPrices();
+        // Calls adapter method
+        const prices = await okxAdapter.getMarketPrices();
         if (!prices) return;
         const remainingAlerts = [];
         let triggered = false;
@@ -771,10 +786,12 @@ async function checkPriceMovements() {
         await sendDebugMessage("Checking price movements...");
         const alertSettings = await loadAlertSettings();
         const priceTracker = await loadPriceTracker();
-        const prices = await getMarketPrices();
+        // Calls adapter method
+        const prices = await okxAdapter.getMarketPrices();
         if (!prices) return;
 
-        const { assets, total: currentTotalValue, error } = await getPortfolio(prices);
+        // Calls adapter method
+        const { assets, total: currentTotalValue, error } = await okxAdapter.getPortfolio(prices);
         if (error || currentTotalValue === undefined) return;
 
         if (priceTracker.totalPortfolioValue === 0) {
@@ -813,9 +830,11 @@ async function runDailyJobs() {
     try {
         const settings = await loadSettings();
         if (!settings.dailySummary) return;
-        const prices = await getMarketPrices();
+        // Calls adapter method
+        const prices = await okxAdapter.getMarketPrices();
         if (!prices) return;
-        const { total } = await getPortfolio(prices);
+        // Calls adapter method
+        const { total } = await okxAdapter.getPortfolio(prices);
         if (total === undefined) return;
         const history = await loadHistory();
         const date = new Date().toISOString().slice(0, 10);
@@ -832,9 +851,11 @@ async function runDailyJobs() {
 
 async function runHourlyJobs() {
     try {
-        const prices = await getMarketPrices();
+        // Calls adapter method
+        const prices = await okxAdapter.getMarketPrices();
         if (!prices) return;
-        const { total } = await getPortfolio(prices);
+        // Calls adapter method
+        const { total } = await okxAdapter.getPortfolio(prices);
         if (total === undefined) return;
         const history = await loadHourlyHistory();
         const hourLabel = new Date().toISOString().slice(0, 13);
@@ -852,7 +873,8 @@ async function monitorVirtualTrades() {
     const activeTrades = await getActiveVirtualTrades();
     if (activeTrades.length === 0) return;
 
-    const prices = await getMarketPrices();
+    // Calls adapter method
+    const prices = await okxAdapter.getMarketPrices();
     if (!prices) return;
 
     for (const trade of activeTrades) {
@@ -893,7 +915,6 @@ async function monitorVirtualTrades() {
         }
     }
 }
-
 
 // =================================================================
 // SECTION 5: BOT SETUP, KEYBOARDS, AND HANDLERS
@@ -954,7 +975,7 @@ bot.use(async (ctx, next) => {
 
 bot.command("start", (ctx) => {
     const welcomeMessage = `🤖 *أهلاً بك في بوت OKX التحليلي المتكامل، مساعدك الذكي لإدارة وتحليل محفظتك الاستثمارية.*\n\n` +
-        `*الإصدار: v106 - The Accountability Fix*\n\n` +
+        `*الإصدار: v106 - The Accountability Fix (Adapter Refactor)*\n\n` + // Updated version text
         `أنا هنا لمساعدتك على:\n` +
         `- 📊 تتبع أداء محفظتك لحظة بلحظة.\n` +
         `- 🚀 تحليل اتجاهات السوق والفرص المتاحة.\n` +
@@ -1082,16 +1103,18 @@ bot.on("callback_query:data", async (ctx) => {
                 break;
             case "track_virtual_trades":
                 await ctx.editMessageText("⏳ جاري جلب التوصيات النشطة...");
+                // Calls adapter method
+                const prices = await okxAdapter.getMarketPrices(); 
+                if (!prices) {
+                    await ctx.editMessageText("❌ فشل جلب الأسعار، لا يمكن متابعة التوصيات.", { reply_markup: virtualTradeKeyboard });
+                    return;
+                }
                 const activeTrades = await getActiveVirtualTrades();
                 if (activeTrades.length === 0) {
                     await ctx.editMessageText("✅ لا توجد توصيات افتراضية نشطة حاليًا.", { reply_markup: virtualTradeKeyboard });
                     return;
                 }
-                const prices = await getMarketPrices();
-                if (!prices) {
-                    await ctx.editMessageText("❌ فشل جلب الأسعار، لا يمكن متابعة التوصيات.", { reply_markup: virtualTradeKeyboard });
-                    return;
-                }
+
                 let reportMsg = "📈 *متابعة حية للتوصيات النشطة:*\n" + "━━━━━━━━━━━━━━━━━━━━\n";
                 for (const trade of activeTrades) {
                     const currentPrice = prices[trade.instId]?.price;
@@ -1197,7 +1220,6 @@ bot.on("message:text", async (ctx) => {
                 try {
                     const lines = text.split('\n').map(line => line.trim());
                     if (lines.length < 5) throw new Error("التنسيق غير صحيح، يجب أن يتكون من 5 أسطر.");
-
                     const instId = lines[0].toUpperCase();
                     const entryPrice = parseFloat(lines[1]);
                     const targetPrice = parseFloat(lines[2]);
@@ -1279,8 +1301,9 @@ bot.on("message:text", async (ctx) => {
                 const loadingMsg = await ctx.reply(`⏳ جاري تجهيز التقرير لـ ${instId}...`);
 
                 try {
+                    // Calls adapter methods
                     const [details, prices, historicalPerf, techAnalysis] = await Promise.all([
-                        getInstrumentDetails(instId), getMarketPrices(), getHistoricalPerformance(coinSymbol), getTechnicalAnalysis(instId)
+                        okxAdapter.getInstrumentDetails(instId), okxAdapter.getMarketPrices(), getHistoricalPerformance(coinSymbol), getTechnicalAnalysis(instId)
                     ]);
 
                     if (details.error || !prices) {
@@ -1293,7 +1316,8 @@ bot.on("message:text", async (ctx) => {
                     msg += ` ▫️ *أدنى (24س):* \`$${formatNumber(details.low24h, 4)}\`\n\n`;
 
                     msg += `*القسم الثاني: تحليل مركزك الحالي*\n`;
-                    const { assets: userAssets } = await getPortfolio(prices);
+                    // Calls adapter method
+                    const { assets: userAssets } = await okxAdapter.getPortfolio(prices);
                     const ownedAsset = userAssets.find(a => a.asset === coinSymbol);
                     const positions = await loadPositions();
                     const assetPosition = positions[coinSymbol];
@@ -1375,10 +1399,12 @@ bot.on("message:text", async (ctx) => {
         case "📊 عرض المحفظة":
             const loadingMsgPortfolio = await ctx.reply("⏳ جاري إعداد التقرير...");
             try {
-                const prices = await getMarketPrices();
+                // Calls adapter method
+                const prices = await okxAdapter.getMarketPrices();
                 if (!prices) throw new Error("فشل جلب أسعار السوق.");
                 const capital = await loadCapital();
-                const { assets, total, error } = await getPortfolio(prices);
+                // Calls adapter method
+                const { assets, total, error } = await okxAdapter.getPortfolio(prices);
                 if (error) throw new Error(error);
                 const msgPortfolio = await formatPortfolioMsg(assets, total, capital);
                 await ctx.api.editMessageText(loadingMsgPortfolio.chat.id, loadingMsgPortfolio.message_id, msgPortfolio, { parse_mode: "Markdown" });
@@ -1403,10 +1429,12 @@ bot.on("message:text", async (ctx) => {
         case "⚡ إحصائيات سريعة":
             const loadingMsgQuick = await ctx.reply("⏳ جاري حساب الإحصائيات...");
             try {
-                const prices = await getMarketPrices();
+                // Calls adapter method
+                const prices = await okxAdapter.getMarketPrices();
                 if (!prices) throw new Error("فشل جلب أسعار السوق.");
                 const capital = await loadCapital();
-                const { assets, total, error } = await getPortfolio(prices);
+                // Calls adapter method
+                const { assets, total, error } = await okxAdapter.getPortfolio(prices);
                 if (error) throw new Error(error);
                 const quickStatsMsg = await formatQuickStats(assets, total, capital);
                 await ctx.api.editMessageText(loadingMsgQuick.chat.id, loadingMsgQuick.message_id, quickStatsMsg, { parse_mode: "Markdown" });
@@ -1439,7 +1467,6 @@ bot.on("message:text", async (ctx) => {
     }
 });
 
-
 // =================================================================
 // SECTION 6: SERVER AND BOT INITIALIZATION
 // =================================================================
@@ -1452,6 +1479,7 @@ async function startBot() {
         console.log("MongoDB connected.");
 
         // Schedule background jobs
+        // These jobs now call methods via the okxAdapter instance
         setInterval(monitorBalanceChanges, 60 * 1000);
         setInterval(trackPositionHighLow, 60 * 1000);
         setInterval(checkPriceAlerts, 30 * 1000);
