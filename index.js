@@ -841,7 +841,7 @@ async function startBot() {
         setInterval(monitorBalanceChanges, 60 * 1000);
         setInterval(trackPositionHighLow, 60 * 1000);
         setInterval(checkPriceAlerts, 30 * 1000);
-        // setInterval(checkPriceMovements, 60 * 1000); // This logic is now inside monitorBalanceChanges
+        setInterval(checkPriceMovements, 60 * 1000); // This logic is now inside monitorBalanceChanges
         setInterval(monitorVirtualTrades, 30 * 1000);
         setInterval(runHourlyJobs, 60 * 60 * 1000);
         setInterval(runDailyJobs, 24 * 60 * 60 * 1000);
