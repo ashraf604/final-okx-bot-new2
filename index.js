@@ -545,7 +545,7 @@ async function formatPortfolioMsg(assets, total, capital) {
         }
     });
     caption += `\n\n━━━━━━━━━━━━━━━━━━━━\n*USDT \\(الرصيد النقدي\\)* 💵\n`;
-    caption += `*القيمة:* \`$${sanitizeMarkdownV2(formatNumber(usdtValue))}\` \\(*الوزن:* \`${sanitizeMarkdownV2(formatNumber(cashPercent))}%\`\\)`;
+    caption += `*القيمة:* \`$${sanitizeMarkdownV2(formatNumber(usdtAsset.value))}\` \\(*الوزن:* \`${sanitizeMarkdownV2(formatNumber(cashPercent))}%\`\\)`;
     return { caption };
 }
 async function formatAdvancedMarketAnalysis(ownedAssets = []) {
@@ -730,7 +730,7 @@ async function getAIDailyPortfolioUpdate() {
         const cryptoAssets = assets.filter(a => a.asset !== "USDT" && a.value >= 1);
         
         if (cryptoAssets.length === 0) {
-            return "ℹ️ لا توجد أصول كريبتو في محفظتك لعرض تحديث يومي\\.";
+            return "ℹ️ لا توجد أصول كريبتو في محفظتك لعرض تحديث يومي.";
         }
         
         // حساب الوقت منذ آخر تحديث
@@ -738,7 +738,7 @@ async function getAIDailyPortfolioUpdate() {
         const hoursAgo = Math.floor((Date.now() - lastUpdate.getTime()) / (1000 * 60 * 60));
         
         // إنشاء الرسالة الأساسية
-        let message = `أهلا المستخدم إليك التحديث اليومي الذي جمعناه لك بناء على الأصول في محفظتك\\.\n`;
+        let message = `أهلا المستخدم إليك التحديث اليومي الذي جمعناه لك بناء على الأصول في محفظتك.\n`;
         message += `آخر تحديث منذ ${hoursAgo} من الساعات\n\n`;
         
         // إضافة معلومات كل أصل
@@ -770,13 +770,12 @@ async function getAIDailyPortfolioUpdate() {
         message += await getAIPortfolioRecommendations(cryptoAssets);
         
         // إضافة إخلاء المسؤولية
-        message += `\n\nتم تجميع هذا المحتوى وتلخيصه بواسطة الذكاء الاصطناعي، لذلك قد لا تكون المعلومات المقدمة دقيقة أو كاملة أو حديثة، وليست نصيحة استثمارية\\.`;
+        message += `\n\nتم تجميع هذا المحتوى وتلخيصه بواسطة الذكاء الاصطناعي، لذلك قد لا تكون المعلومات المقدمة دقيقة أو كاملة أو حديثة، وليست نصيحة استثمارية.`;
         
-        // تطبيق تخطي MarkdownV2 على النص بأكمله
-        return sanitizeMarkdownV2(message);
+        return message;
     } catch (e) {
         console.error("Error in getAIDailyPortfolioUpdate:", e);
-        return "❌ حدث خطأ أثناء إنشاء التحديث اليومي للمحفظة\\.";
+        return "❌ حدث خطأ أثناء إنشاء التحديث اليومي للمحفظة.";
     }
 }
 
@@ -1045,8 +1044,7 @@ async function analyzeWithAI(prompt) {
             console.error("AI Analysis Blocked:", response.promptFeedback.blockReason);
             return `❌ تم حظر التحليل من قبل Google لأسباب تتعلق بالسلامة: ${response.promptFeedback.blockReason}`;
         }
-        // تطبيق تخطي MarkdownV2 على الرد
-        return sanitizeMarkdownV2(response.text().trim());
+        return response.text().trim();
     } catch (error) {
         console.error("AI Analysis Error (Gemini):", error);
         return "❌ تعذر إجراء التحليل بالذكاء الاصطناعي. قد يكون هناك مشكلة في الاتصال أو المفتاح السري.";
@@ -1758,12 +1756,12 @@ async function generateUnifiedDailyReport() {
 // =================================================================
 // SECTION 6: BOT KEYBOARDS & MENUS
 // =================================================================
-// *** MODIFIED: Removed "Daily Portfolio Update" button from main keyboard ***
+// *** MODIFIED: Added "Daily Portfolio Update" button ***
 const mainKeyboard = new Keyboard()
     .text("📊 عرض المحفظة").text("📈 أداء المحفظة").text("🚀 تحليل السوق").row()
     .text("📜 تقرير شامل").text("🔍 مراجعة الصفقات").text("📈 تحليل تراكمي").row()
     .text("⏱️ لوحة النبض").text("📝 ملخص اليوم").text("⚡ إحصائيات سريعة").row()
-    .text("🧠 تحليل بالذكاء الاصطناعي").text("💡 توصية افتراضية").row() // إزالة الزر من هنا
+    .text("🧠 تحليل بالذكاء الاصطناعي").text("📊 تحديث المحفظة اليومية").text("💡 توصية افتراضية").row()
     .text("🧮 حاسبة الربح والخسارة").row()
     .text("⚙️ الإعدادات").resized();
 
@@ -1967,6 +1965,12 @@ async function handleTextMessage(ctx, text) {
                 break;
             case "🧠 تحليل بالذكاء الاصطناعي":
                 await ctx.reply("اختر نوع التحليل الذي تريده:", { reply_markup: aiKeyboard });
+                break;
+            case "📊 تحديث المحفظة اليومية":
+                loadingMessage.id = (await ctx.reply("⏳ جاري إنشاء التحديث اليومي للمحفظة...")).message_id;
+                loadingMessage.chat_id = ctx.chat.id;
+                const dailyUpdate = await getAIDailyPortfolioUpdate();
+                await ctx.api.editMessageText(loadingMessage.chat_id, loadingMessage.id, dailyUpdate, { parse_mode: "MarkdownV2" });
                 break;
             case "🧮 حاسبة الربح والخسارة":
                 await ctx.reply("✍️ لحساب الربح/الخسارة، استخدم أمر `/pnl` بالصيغة التالية:\n`/pnl <سعر الشراء> <سعر البيع> <الكمية>`", {parse_mode: "MarkdownV2"});
