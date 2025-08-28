@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v146.5 (UI Restoration II)
+// Advanced Analytics Bot - v147.1 (Notification & Startup Hotfix)
 // =================================================================
 // --- IMPORTS ---
 const express = require("express");
@@ -705,8 +705,8 @@ async function getMarketContext(instId) {
 // --- AI Analysis Services ---
 async function analyzeWithAI(prompt) {
     try {
-        const fullPrompt = `أنت محلل مالي خبير ومستشار استثماري متخصص في العملات الرقمية، تتحدث بالعربية الفصحى، وتقدم تحليلات دقيقة وموجزة. في نهاية كل تحليل، يجب عليك إضافة السطر التالي بالضبط كما هو: "هذا التحليل لأغراض معلوماتية فقط وليس توصية مالية."\n\n---\n\nالطلب: ${prompt}`;
-        const result = await geminiModel.generateContent(fullPrompt);
+        // The generic system prompt is now part of the specific prompt generation
+        const result = await geminiModel.generateContent(prompt);
         const response = await result.response;
         if (response.promptFeedback?.blockReason) {
             console.error("AI Analysis Blocked:", response.promptFeedback.blockReason);
@@ -749,65 +749,69 @@ function truncate(s, max = 12000) {
     return s.length > max ? s.slice(0, max) + "..." : s; 
 }
 
+// *** MODIFIED V147.0: AI now acts as a Performance Coach ***
 async function getAIAnalysisForAsset(asset) {
     const instId = `${asset}-USDT`;
-    const [details, tech, perf, fundamentals] = await Promise.all([
+    const [details, tech, tradeHistory, fundamentals] = await Promise.all([
         getInstrumentDetails(instId),
         getTechnicalAnalysis(instId),
-        getHistoricalPerformance(asset),
+        getCollection("tradeHistory").find({ asset: asset }).sort({ closedAt: -1 }).limit(10).toArray(),
         getCoinFundamentals(asset)
     ]);
 
     if (details.error) return `لا يمكن تحليل ${asset}: ${details.error}`;
     if (tech.error) return `لا يمكن تحليل ${asset}: ${tech.error}`;
-    if (!perf) return `لا يمكن تحليل ${asset}: فشل جلب الأداء التاريخي.`;
 
-    let fundamentalSection = "";
-    if (fundamentals && !fundamentals.error) {
-        fundamentalSection = `
-    **1. بيانات المشروع الأساسية (من مصادر خارجية):**
-    - **الترتيب السوقي:** ${fundamentals.rank || 'غير معروف'}
-    - **الفئة:** ${fundamentals.category || 'غير معروف'}
-    - **وصف المشروع:** ${fundamentals.description || 'لا يوجد'}
-        `;
-    } else {
-        fundamentalSection = `
-    **1. بيانات المشروع الأساسية:**
-    - لم يتم العثور على بيانات أساسية محدثة للمشروع. إذا كانت لديك معرفة مسبقة بهذا المشروع، يرجى استخدامها في تحليلك.
-        `;
+    let historySummary = "لا توجد صفقات سابقة مسجلة.";
+    if (tradeHistory.length > 0) {
+        historySummary = tradeHistory.map((trade, index) => {
+            const pnlSign = trade.pnlPercent >= 0 ? '+' : '';
+            return `الصفقة ${index + 1}: النتيجة ${pnlSign}${formatNumber(trade.pnlPercent)}% بعد ${formatNumber(trade.durationDays, 1)} يوم.`;
+        }).join('\n');
     }
 
-    let riskProfile = "متوسط";
-    if (tech.rsi > 70) riskProfile = "مرتفع (تشبع شرائي)";
-    if (tech.rsi < 30) riskProfile = "منخفض (تشبع بيعي)";
-
     const basePrompt = `
-    أنت محلل خبير. قم بتحليل عملة ${asset} بشكل شامل يدمج بين التحليل الأساسي والفني وتاريخي الشخصي معها.
-    ${fundamentalSection}
+    أنت محلل مالي خبير ومدرب أداء شخصي متخصص في العملات الرقمية. لهجتك احترافية، ثاقبة، ومصممة خصيصًا لتاريخ المستخدم الشخصي. تتحدث بالعربية الفصحى. اختتم كل تحليل بالسطر التالي بالضبط: "هذا التحليل لأغراض معلوماتية فقط وليس توصية مالية."
+
+    ---
+
+    **العملة المطلوب تحليلها:** ${asset}
+
+    **1. البيانات الأساسية للمشروع (من مصادر خارجية):**
+    - الترتيب السوقي: ${fundamentals.rank || 'غير معروف'}
+    - الفئة: ${fundamentals.category || 'غير معروف'}
+    - وصف المشروع: ${fundamentals.description || 'لا يوجد'}
+
     **2. البيانات الفنية الحالية:**
-    - **السعر الحالي:** $${formatSmart(details.price)}
-    - **أعلى 24 ساعة:** $${formatSmart(details.high24h)}
-    - **أدنى 24 ساعة:** $${formatSmart(details.low24h)}
-    - **RSI (14 يوم):** ${tech.rsi ? formatNumber(tech.rsi) : 'N/A'}
-    - **ملف المخاطرة الفني:** ${riskProfile}
-    - **علاقة السعر بالمتوسطات:** السعر حاليًا ${details.price > tech.sma20 ? 'فوق' : 'تحت'} SMA20 و ${details.price > tech.sma50 ? 'فوق' : 'تحت'} SMA50.
+    - السعر الحالي: $${formatSmart(details.price)}
+    - أعلى سعر (24 ساعة): $${formatSmart(details.high24h)}
+    - أدنى سعر (24 ساعة): $${formatSmart(details.low24h)}
+    - مؤشر القوة النسبية (14 يوم): ${tech.rsi ? formatNumber(tech.rsi) : 'N/A'}
+    - السعر مقابل المتوسطات المتحركة: حاليًا ${details.price > tech.sma20 ? 'فوق' : 'تحت'} SMA20 و ${details.price > tech.sma50 ? 'فوق' : 'تحت'} SMA50.
 
-    **3. بياناتي التاريخية مع العملة:**
-    - **عدد صفقاتي السابقة:** ${perf.tradeCount}
-    - **معدل نجاحي:** ${perf.tradeCount > 0 ? formatNumber((perf.winningTrades / perf.tradeCount) * 100) : '0'}%
+    **3. سجلي التداولي المفصل مع عملة ${asset} (آخر 10 صفقات):**
+    ${historySummary}
 
-    **المطلوب:**
-    قدم تحليلًا متكاملاً في فقرة واحدة. ابدأ بوصف المشروع ومكانته (باستخدام البيانات المتاحة أو معرفتك الخاصة)، ثم اربطه بالوضع الفني الحالي، وأخيرًا، قدم توصية واضحة (شراء/بيع/مراقبة) مع الأخذ في الاعتبار تاريخي الشخصي مع العملة.
+    **التحليل المطلوب:**
+    قدم تحليلًا متكاملاً وموجزًا في فقرة واحدة.
+    1. ابدأ بوصف موجز للمشروع ووضعه الفني الحالي.
+    2. الأهم من ذلك، قم بتحليل سجلي التداولي الشخصي مع ${asset}. حدد أي أنماط واضحة. على سبيل المثال: هل أميل إلى بيع الصفقات الرابحة مبكرًا؟ هل أجني الأرباح بفعالية؟ هل أنا منضبط في وقف الخسائر؟
+    3. اختتم بتوصية واضحة وشخصية (شراء، بيع، أو مراقبة) تدمج بين بيانات السوق والأنماط التي حددتها في أدائي الشخصي. يجب أن تكون توصيتك نتيجة مباشرة لهذا التحليل المدمج.
     `;
 
     return await analyzeWithAI(truncate(basePrompt));
 }
 
+
 async function getAIAnalysisForPortfolio(assets, total, capital) {
     const topAssets = assets.slice(0, 5).map(a => `${a.asset} (يمثل ${formatNumber((a.value/total)*100)}%)`).join('، ');
     const pnlPercent = capital > 0 ? ((total - capital) / capital) * 100 : 0;
     const prompt = `
-    قم بتحليل المحفظة الاستثمارية التالية:
+    أنت محلل مالي خبير ومستشار استثماري متخصص في العملات الرقمية، تتحدث بالعربية الفصحى، وتقدم تحليلات دقيقة وموجزة. في نهاية كل تحليل، يجب عليك إضافة السطر التالي بالضبط كما هو: "هذا التحليل لأغراض معلوماتية فقط وليس توصية مالية."
+
+    ---
+    
+    **الطلب:** قم بتحليل المحفظة الاستثمارية التالية:
     - القيمة الإجمالية: $${formatNumber(total)}
     - رأس المال الأصلي: $${formatNumber(capital)}
     - إجمالي الربح/الخسارة غير المحقق: ${formatNumber(pnlPercent)}%
@@ -857,12 +861,13 @@ async function getAIGeneralNewsSummary() {
 
     const articlesForPrompt = newsArticles.map(a => `Source: ${a.source}\nTitle: ${a.title}\nContent: ${a.content}`).join('\n\n---\n\n');
 
-    const prompt = `You are an expert news editor. The following is a list of recent news articles, likely in English. Your task is to:
-1. Identify the 3-4 most important news items related to the cryptocurrency market.
-2. Summarize them concisely in PROFESSIONAL ARABIC.
-3. Based on these summaries, write a short paragraph in ARABIC about the general market sentiment (e.g., bullish, bearish, uncertain).
+    const prompt = `أنت محرر أخبار خبير. القائمة التالية تحتوي على مقالات إخبارية حديثة، على الأرجح باللغة الإنجليزية. مهمتك هي:
+1. تحديد أهم 3-4 أخبار متعلقة بسوق العملات الرقمية.
+2. تلخيصها بإيجاز باللغة العربية الاحترافية.
+3. بناءً على هذه الملخصات، اكتب فقرة قصيرة باللغة العربية حول الشعور العام للسوق (على سبيل المثال، صعودي، هبوطي، غير مؤكد).
+4. اختتم كل تحليل بالسطر التالي بالضبط: "هذا التحليل لأغراض معلوماتية فقط وليس توصية مالية."
 
-News Articles:\n${articlesForPrompt}`;
+مقالات الأخبار:\n${articlesForPrompt}`;
 
     return await analyzeWithAI(prompt);
 }
@@ -886,12 +891,13 @@ async function getAIPortfolioNewsSummary() {
 
     const articlesForPrompt = newsArticles.map(a => `Source: ${a.source}\nTitle: ${a.title}\nContent: ${a.content}`).join('\n\n---\n\n');
 
-    const prompt = `You are a personal financial advisor. My portfolio contains the following assets: ${assetSymbols}. Below is a list of recent news articles, likely in English. Your task is to:
-1. Summarize the most important news from the list that could affect my investments.
-2. Explain the potential impact of each news item simply.
-3. All your output MUST be in PROFESSIONAL ARABIC.
+    const prompt = `أنت مستشار مالي شخصي. تحتوي محفظتي على الأصول التالية: ${assetSymbols}. فيما يلي قائمة بالمقالات الإخبارية الحديثة، على الأرجح باللغة الإنجليزية. مهمتك هي:
+1. تلخيص أهم الأخبار من القائمة التي قد تؤثر على استثماراتي.
+2. شرح التأثير المحتمل لكل خبر ببساطة.
+3. يجب أن يكون كل ما تكتبه باللغة العربية الاحترافية.
+4. اختتم كل تحليل بالسطر التالي بالضبط: "هذا التحليل لأغراض معلوماتية فقط وليس توصية مالية."
 
-News Articles:\n${articlesForPrompt}`;
+مقالات الأخبار:\n${articlesForPrompt}`;
 
     return await analyzeWithAI(prompt);
 }
@@ -1055,7 +1061,7 @@ async function updatePositionAndAnalyze(asset, amountChange, price, newTotalAmou
     return { analysisResult };
 }
 
-// *** MODIFIED V146.0: Integrated latency tracking and market context ***
+// *** MODIFIED V147.1: Refactored notification logic for reliability ***
 async function monitorBalanceChanges(signalTime = Date.now()) {
     if (isProcessingBalance) {
         await sendDebugMessage("Balance check skipped: a process is already running.");
@@ -1102,14 +1108,13 @@ async function monitorBalanceChanges(signalTime = Date.now()) {
             stateNeedsUpdate = true;
             await sendDebugMessage(`Detected change for ${asset}: ${difference}`);
             
-            // --- Latency & Context Start (V146.0) ---
             const analysisTimeStart = Date.now();
             const marketContext = await getMarketContext(`${asset}-USDT`);
             const { analysisResult } = await updatePositionAndAnalyze(asset, difference, priceData.price, currAmount, oldTotalValue);
             const analysisTimeEnd = Date.now();
-            // --- Latency & Context End (V146.0) ---
 
             if (analysisResult.type === 'none') continue;
+
             const tradeValue = Math.abs(difference) * priceData.price;
             const newAssetData = newAssets.find(a => a.asset === asset);
             const newAssetValue = newAssetData ? newAssetData.value : 0;
@@ -1128,7 +1133,7 @@ async function monitorBalanceChanges(signalTime = Date.now()) {
                 newCashPercent, 
                 oldUsdtValue, 
                 position: analysisResult.data.position,
-                marketContext // Pass context to formatting functions
+                marketContext
             };
             
             const settings = await loadSettings();
@@ -1143,39 +1148,31 @@ async function monitorBalanceChanges(signalTime = Date.now()) {
                 }
             };
 
+            // --- UNIFIED NOTIFICATION LOGIC (V147.1) ---
+            // 1. Determine which messages to generate
             if (analysisResult.type === 'buy') {
                 privateMessage = formatPrivateBuy(baseDetails);
                 publicMessage = formatPublicBuy(baseDetails);
-                await sendMessageSafely(AUTHORIZED_USER_ID, privateMessage);
-                if (settings.autoPostToChannel) {
-                    await sendMessageSafely(TARGET_CHANNEL_ID, publicMessage);
-                }
             } else if (analysisResult.type === 'sell') {
                 privateMessage = formatPrivateSell(baseDetails);
                 publicMessage = formatPublicSell(baseDetails);
-                await sendMessageSafely(AUTHORIZED_USER_ID, privateMessage);
-                if (settings.autoPostToChannel) {
-                    await sendMessageSafely(TARGET_CHANNEL_ID, publicMessage);
-                }
             } else if (analysisResult.type === 'close') {
-                // Pass context to close report
                 analysisResult.data.marketContext = marketContext;
                 privateMessage = formatPrivateCloseReport(analysisResult.data);
                 publicMessage = formatPublicClose(analysisResult.data);
-                if (settings.autoPostToChannel) {
-                    await sendMessageSafely(TARGET_CHANNEL_ID, publicMessage);
-                    await sendMessageSafely(AUTHORIZED_USER_ID, privateMessage);
-                } else {
-                    const confirmationKeyboard = new InlineKeyboard()
-                        .text("✅ نعم، انشر التقرير", "publish_report")
-                        .text("❌ لا، تجاهل", "ignore_report");
-                    const hiddenMarker = `\n<report>${JSON.stringify(publicMessage)}</report>`;
-                    const confirmationMessage = `*تم إغلاق المركز بنجاح\\. هل تود نشر الملخص في القناة؟*\n\n${privateMessage}${hiddenMarker}`;
-                    await sendMessageSafely(AUTHORIZED_USER_ID, confirmationMessage, { reply_markup: confirmationKeyboard });
-                }
             }
 
-            // --- Save Latency Log (V146.0) ---
+            // 2. Always send the private message to the owner
+            if (privateMessage) {
+                await sendMessageSafely(AUTHORIZED_USER_ID, privateMessage);
+            }
+
+            // 3. If auto-post is on, send the public message to the channel
+            if (settings.autoPostToChannel && publicMessage) {
+                await sendMessageSafely(TARGET_CHANNEL_ID, publicMessage);
+            }
+            // --- END OF UNIFIED LOGIC ---
+
             const notificationTime = Date.now();
             await saveLatencyLog({
                 signalTime: new Date(signalTime),
@@ -1199,6 +1196,7 @@ async function monitorBalanceChanges(signalTime = Date.now()) {
         isProcessingBalance = false;
     }
 }
+
 
 async function trackPositionHighLow() { try { const positions = await loadPositions(); if (Object.keys(positions).length === 0) return; const prices = await getCachedMarketPrices(); if (!prices || prices.error) return; let positionsUpdated = false; for (const symbol in positions) { const position = positions[symbol]; const currentPrice = prices[`${symbol}-USDT`]?.price; if (currentPrice) { if (!position.highestPrice || currentPrice > position.highestPrice) { position.highestPrice = currentPrice; positionsUpdated = true; } if (!position.lowestPrice || currentPrice < position.lowestPrice) { position.lowestPrice = currentPrice; positionsUpdated = true; } } } if (positionsUpdated) { await savePositions(positions); await sendDebugMessage("Updated position high/low prices."); } } catch(e) { console.error("CRITICAL ERROR in trackPositionHighLow:", e); } }
 async function checkPriceAlerts() { try { const alerts = await loadAlerts(); if (alerts.length === 0) return; const prices = await getCachedMarketPrices(); if (!prices || prices.error) return; const remainingAlerts = []; let triggered = false; for (const alert of alerts) { const currentPrice = prices[alert.instId]?.price; if (currentPrice === undefined) { remainingAlerts.push(alert); continue; } if ((alert.condition === '>' && currentPrice > alert.price) || (alert.condition === '<' && currentPrice < alert.price)) { await bot.api.sendMessage(AUTHORIZED_USER_ID, `🚨 *تنبيه سعر\\!* \`${sanitizeMarkdownV2(alert.instId)}\`\nالشرط: ${sanitizeMarkdownV2(alert.condition)} ${sanitizeMarkdownV2(alert.price)}\nالسعر الحالي: \`${sanitizeMarkdownV2(currentPrice)}\``, { parse_mode: "MarkdownV2" }); triggered = true; } else { remainingAlerts.push(alert); } } if (triggered) await saveAlerts(remainingAlerts); } catch (error) { console.error("Error in checkPriceAlerts:", error); } }
@@ -1927,8 +1925,16 @@ async function startBot() {
 
         // Start real-time monitoring
         connectToOKXSocket();
+        
+        // *** MODIFIED V147.1: Added a delay and robust error handling for startup message ***
+        setTimeout(async () => {
+            try {
+                await bot.api.sendMessage(AUTHORIZED_USER_ID, "✅ *تم إعادة تشغيل البوت بنجاح \\(v147.1 \\- Notification & Startup Hotfix\\)*\n\n\\- تم إصلاح نظام الإشعارات ورسالة بدء التشغيل\\.", { parse_mode: "MarkdownV2" });
+            } catch (e) {
+                console.error("Could not send startup message:", e.message);
+            }
+        }, 2000);
 
-        await bot.api.sendMessage(AUTHORIZED_USER_ID, "✅ *تم إعادة تشغيل البوت بنجاح \\(v146\\.5 \\- UI Restoration II\\)*\n\n\\- تم إصلاح واجهة الأزرار وإعادة زر مراجعة الصفقات\\.", { parse_mode: "MarkdownV2" }).catch(console.error);
 
     } catch (e) {
         console.error("FATAL: Could not start the bot.", e);
