@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v147.1 (Notification & Startup Hotfix)
+// Advanced Analytics Bot - v147.0 (AI Performance Coach)
 // =================================================================
 // --- IMPORTS ---
 const express = require("express");
@@ -1061,7 +1061,7 @@ async function updatePositionAndAnalyze(asset, amountChange, price, newTotalAmou
     return { analysisResult };
 }
 
-// *** MODIFIED V147.1: Refactored notification logic for reliability ***
+// *** MODIFIED V146.0: Integrated latency tracking and market context ***
 async function monitorBalanceChanges(signalTime = Date.now()) {
     if (isProcessingBalance) {
         await sendDebugMessage("Balance check skipped: a process is already running.");
@@ -1108,13 +1108,14 @@ async function monitorBalanceChanges(signalTime = Date.now()) {
             stateNeedsUpdate = true;
             await sendDebugMessage(`Detected change for ${asset}: ${difference}`);
             
+            // --- Latency & Context Start (V146.0) ---
             const analysisTimeStart = Date.now();
             const marketContext = await getMarketContext(`${asset}-USDT`);
             const { analysisResult } = await updatePositionAndAnalyze(asset, difference, priceData.price, currAmount, oldTotalValue);
             const analysisTimeEnd = Date.now();
+            // --- Latency & Context End (V146.0) ---
 
             if (analysisResult.type === 'none') continue;
-
             const tradeValue = Math.abs(difference) * priceData.price;
             const newAssetData = newAssets.find(a => a.asset === asset);
             const newAssetValue = newAssetData ? newAssetData.value : 0;
@@ -1133,7 +1134,7 @@ async function monitorBalanceChanges(signalTime = Date.now()) {
                 newCashPercent, 
                 oldUsdtValue, 
                 position: analysisResult.data.position,
-                marketContext
+                marketContext // Pass context to formatting functions
             };
             
             const settings = await loadSettings();
@@ -1148,31 +1149,39 @@ async function monitorBalanceChanges(signalTime = Date.now()) {
                 }
             };
 
-            // --- UNIFIED NOTIFICATION LOGIC (V147.1) ---
-            // 1. Determine which messages to generate
             if (analysisResult.type === 'buy') {
                 privateMessage = formatPrivateBuy(baseDetails);
                 publicMessage = formatPublicBuy(baseDetails);
+                await sendMessageSafely(AUTHORIZED_USER_ID, privateMessage);
+                if (settings.autoPostToChannel) {
+                    await sendMessageSafely(TARGET_CHANNEL_ID, publicMessage);
+                }
             } else if (analysisResult.type === 'sell') {
                 privateMessage = formatPrivateSell(baseDetails);
                 publicMessage = formatPublicSell(baseDetails);
+                await sendMessageSafely(AUTHORIZED_USER_ID, privateMessage);
+                if (settings.autoPostToChannel) {
+                    await sendMessageSafely(TARGET_CHANNEL_ID, publicMessage);
+                }
             } else if (analysisResult.type === 'close') {
+                // Pass context to close report
                 analysisResult.data.marketContext = marketContext;
                 privateMessage = formatPrivateCloseReport(analysisResult.data);
                 publicMessage = formatPublicClose(analysisResult.data);
+                if (settings.autoPostToChannel) {
+                    await sendMessageSafely(TARGET_CHANNEL_ID, publicMessage);
+                    await sendMessageSafely(AUTHORIZED_USER_ID, privateMessage);
+                } else {
+                    const confirmationKeyboard = new InlineKeyboard()
+                        .text("✅ نعم، انشر التقرير", "publish_report")
+                        .text("❌ لا، تجاهل", "ignore_report");
+                    const hiddenMarker = `\n<report>${JSON.stringify(publicMessage)}</report>`;
+                    const confirmationMessage = `*تم إغلاق المركز بنجاح\\. هل تود نشر الملخص في القناة؟*\n\n${privateMessage}${hiddenMarker}`;
+                    await sendMessageSafely(AUTHORIZED_USER_ID, confirmationMessage, { reply_markup: confirmationKeyboard });
+                }
             }
 
-            // 2. Always send the private message to the owner
-            if (privateMessage) {
-                await sendMessageSafely(AUTHORIZED_USER_ID, privateMessage);
-            }
-
-            // 3. If auto-post is on, send the public message to the channel
-            if (settings.autoPostToChannel && publicMessage) {
-                await sendMessageSafely(TARGET_CHANNEL_ID, publicMessage);
-            }
-            // --- END OF UNIFIED LOGIC ---
-
+            // --- Save Latency Log (V146.0) ---
             const notificationTime = Date.now();
             await saveLatencyLog({
                 signalTime: new Date(signalTime),
@@ -1196,7 +1205,6 @@ async function monitorBalanceChanges(signalTime = Date.now()) {
         isProcessingBalance = false;
     }
 }
-
 
 async function trackPositionHighLow() { try { const positions = await loadPositions(); if (Object.keys(positions).length === 0) return; const prices = await getCachedMarketPrices(); if (!prices || prices.error) return; let positionsUpdated = false; for (const symbol in positions) { const position = positions[symbol]; const currentPrice = prices[`${symbol}-USDT`]?.price; if (currentPrice) { if (!position.highestPrice || currentPrice > position.highestPrice) { position.highestPrice = currentPrice; positionsUpdated = true; } if (!position.lowestPrice || currentPrice < position.lowestPrice) { position.lowestPrice = currentPrice; positionsUpdated = true; } } } if (positionsUpdated) { await savePositions(positions); await sendDebugMessage("Updated position high/low prices."); } } catch(e) { console.error("CRITICAL ERROR in trackPositionHighLow:", e); } }
 async function checkPriceAlerts() { try { const alerts = await loadAlerts(); if (alerts.length === 0) return; const prices = await getCachedMarketPrices(); if (!prices || prices.error) return; const remainingAlerts = []; let triggered = false; for (const alert of alerts) { const currentPrice = prices[alert.instId]?.price; if (currentPrice === undefined) { remainingAlerts.push(alert); continue; } if ((alert.condition === '>' && currentPrice > alert.price) || (alert.condition === '<' && currentPrice < alert.price)) { await bot.api.sendMessage(AUTHORIZED_USER_ID, `🚨 *تنبيه سعر\\!* \`${sanitizeMarkdownV2(alert.instId)}\`\nالشرط: ${sanitizeMarkdownV2(alert.condition)} ${sanitizeMarkdownV2(alert.price)}\nالسعر الحالي: \`${sanitizeMarkdownV2(currentPrice)}\``, { parse_mode: "MarkdownV2" }); triggered = true; } else { remainingAlerts.push(alert); } } if (triggered) await saveAlerts(remainingAlerts); } catch (error) { console.error("Error in checkPriceAlerts:", error); } }
@@ -1925,16 +1933,8 @@ async function startBot() {
 
         // Start real-time monitoring
         connectToOKXSocket();
-        
-        // *** MODIFIED V147.1: Added a delay and robust error handling for startup message ***
-        setTimeout(async () => {
-            try {
-                await bot.api.sendMessage(AUTHORIZED_USER_ID, "✅ *تم إعادة تشغيل البوت بنجاح \\(v147.1 \\- Notification & Startup Hotfix\\)*\n\n\\- تم إصلاح نظام الإشعارات ورسالة بدء التشغيل\\.", { parse_mode: "MarkdownV2" });
-            } catch (e) {
-                console.error("Could not send startup message:", e.message);
-            }
-        }, 2000);
 
+        await bot.api.sendMessage(AUTHORIZED_USER_ID, "✅ *تم إعادة تشغيل البوت بنجاح \\(v147.0 \\- AI Performance Coach\\)*\n\n\\- تم ترقية الذكاء الاصطناعي ليصبح مدرب أداء شخصي\\.", { parse_mode: "MarkdownV2" }).catch(console.error);
 
     } catch (e) {
         console.error("FATAL: Could not start the bot.", e);
