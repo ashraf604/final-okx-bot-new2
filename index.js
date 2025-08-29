@@ -745,11 +745,10 @@ async function getAIDailyPortfolioUpdate() {
         cryptoAssets.forEach(asset => {
             const changePercent = asset.change24h * 100;
             const sign = changePercent >= 0 ? '+' : '';
-            const emoji = changePercent >= 0 ? '🟢' : '🔴';
             const formattedPrice = asset.price < 1 ? formatSmart(asset.price) : formatNumber(asset.price);
             
-            message += `${asset.asset}\n`;
-            message += `${sign}${formatNumber(changePercent)}% $${formattedPrice}\n\n`;
+            message += `${sanitizeMarkdownV2(asset.asset)}\n`;
+            message += `${sanitizeMarkdownV2(sign)}${sanitizeMarkdownV2(formatNumber(changePercent))}% $${sanitizeMarkdownV2(formattedPrice)}\n\n`;
         });
         
         // إضافة التحليل الذكي لكل أصل
@@ -758,16 +757,17 @@ async function getAIDailyPortfolioUpdate() {
         for (const asset of cryptoAssets) {
             const changePercent = asset.change24h * 100;
             const analysis = await getAIAssetAnalysis(asset.asset, changePercent, asset.price);
-            message += `*${asset.asset}:* ${analysis}\n\n`;
+            message += `*${sanitizeMarkdownV2(asset.asset)}:* ${sanitizeMarkdownV2(analysis)}\n\n`;
         }
         
         // إضافة التحليل العام للمحفظة
         const portfolioAnalysis = await getAIPortfolioAnalysis(cryptoAssets, total);
-        message += `*تحليل المحفظة العامة:* ${portfolioAnalysis}\n\n`;
+        message += `*تحليل المحفظة العامة:* ${sanitizeMarkdownV2(portfolioAnalysis)}\n\n`;
         
         // إضافة الخلاصة والتوصيات
         message += `*خلاصة وتوصيات:*\n`;
-        message += await getAIPortfolioRecommendations(cryptoAssets);
+        const recommendations = await getAIPortfolioRecommendations(cryptoAssets);
+        message += `${sanitizeMarkdownV2(recommendations)}`;
         
         // إضافة إخلاء المسؤولية
         message += `\n\nتم تجميع هذا المحتوى وتلخيصه بواسطة الذكاء الاصطناعي، لذلك قد لا تكون المعلومات المقدمة دقيقة أو كاملة أو حديثة، وليست نصيحة استثمارية.`;
