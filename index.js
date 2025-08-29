@@ -1,5 +1,5 @@
 // =================================================================
-// Advanced Analytics Bot - v147.0 (AI Recommendation Engine)
+// Advanced Analytics Bot - v147.1 (Parse Mode Fix)
 // =================================================================
 // --- IMPORTS ---
 const express = require("express");
@@ -812,7 +812,7 @@ async function runHourlyRecommendationJob() {
         const recommendations = await getAIScalpingRecommendations();
         if (recommendations && !recommendations.startsWith('❌') && !recommendations.startsWith('ℹ️')) {
             const sanitizedMessage = sanitizeMarkdownV2(recommendations);
-            await bot.api.sendMessage(AUTHORIZED_USER_ID, `*🧠 توصيات فنية آلية (سكالبينغ/يومي)*\n\n${sanitizedMessage}`, { parse_mode: "MarkdownV2" });
+            await bot.api.sendMessage(AUTHORIZED_USER_ID, `*🧠 توصيات فنية آلية \\(سكالبينغ/يومي\\)*\n\n${sanitizedMessage}`, { parse_mode: "MarkdownV2" });
         } else {
              await sendDebugMessage(`AI recommendation generation skipped or failed: ${recommendations}`);
         }
@@ -1411,7 +1411,7 @@ async function handleTextMessage(ctx, text) {
                 loadingMessage.chat_id = ctx.chat.id;
                 const recommendations = await getAIScalpingRecommendations();
                 const sanitizedRecs = sanitizeMarkdownV2(recommendations);
-                await ctx.api.editMessageText(loadingMessage.chat_id, loadingMessage.id, `*🧠 توصيات فنية آلية (سكالبينغ/يومي)*\n\n${sanitizedRecs}`, { parse_mode: "MarkdownV2" });
+                await ctx.api.editMessageText(loadingMessage.chat_id, loadingMessage.id, `*🧠 توصيات فنية آلية \\(سكالبينغ/يومي\\)*\n\n${sanitizedRecs}`, { parse_mode: "MarkdownV2" });
                 break;
 
             case "🧮 حاسبة الربح والخسارة":
@@ -1768,7 +1768,7 @@ async function startBot() {
         // Start real-time monitoring
         connectToOKXSocket();
 
-        await bot.api.sendMessage(AUTHORIZED_USER_ID, "✅ *تم إعادة تشغيل البوت بنجاح \\(v147\\.0 \\- AI Recommendation Engine\\)*\n\n\\- تم تحويل وحدة الذكاء الاصطناعي إلى محرك توصيات فنية\\.\n\\- يتم إرسال التوصيات آليًا كل ساعة\\.", { parse_mode: "MarkdownV2" }).catch(console.error);
+        await bot.api.sendMessage(AUTHORIZED_USER_ID, "✅ *تم إعادة تشغيل البوت بنجاح \\(v147\\.1 \\- Parse Mode Fix\\)*\n\n\\- تم إصلاح خطأ تنسيق الرسائل وإعادة تشغيل البوت\\.", { parse_mode: "MarkdownV2" }).catch(console.error);
 
     } catch (e) {
         console.error("FATAL: Could not start the bot.", e);
@@ -1850,3 +1850,4 @@ function connectToOKXSocket() {
 
 
 startBot();
+
