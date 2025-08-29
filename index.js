@@ -205,25 +205,8 @@ function formatSmart(num) {
 }
 const sanitizeMarkdownV2 = (text) => {
     if (typeof text !== 'string' && typeof text !== 'number') return '';
-    return String(text)
-        .replace(/_/g, '\\_')
-        .replace(/\*/g, '\\*')
-        .replace(/\[/g, '\\[')
-        .replace(/\]/g, '\\]')
-        .replace(/\(/g, '\\(')
-        .replace(/\)/g, '\\)')
-        .replace(/~/g, '\\~')
-        .replace(/`/g, '\\`')
-        .replace(/>/g, '\\>')
-        .replace(/#/g, '\\#')
-        .replace(/\+/g, '\\+')
-        .replace(/-/g, '\\-')
-        .replace(/=/g, '\\=')
-        .replace(/\|/g, '\\|')
-        .replace(/{/g, '\\{')
-        .replace(/}/g, '\\}')
-        .replace(/\./g, '\\.')
-        .replace(/!/g, '\\!');
+    // This regex captures all reserved characters for MarkdownV2 and escapes them.
+    return String(text).replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
 };
 const sendDebugMessage = async (message) => {
     const settings = await loadSettings();
